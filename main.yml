@@ -1,0 +1,166 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Despliegue app Node.j sobre instancia EC2 con ubuntu 20.04
+Parameters:
+  EC2AMI:
+    Description: Imagen del Sistema Operativo
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id'
+    Default: '/aws/service/canonical/ubuntu/server/20.04/stable/current/amd64/hvm/ebs-gp2/ami-id'
+  KeyName:
+    Description: Par clave valor para acceso SSH
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: vockey
+  InstanceType:
+    Description: Tamaño instancia EC2
+    Type: String
+    Default: t2.small
+    AllowedValues:
+    - t1.micro
+    - t2.nano
+    - t2.micro
+    - t2.small
+    ConstraintDescription: Tipos de instancia validas
+  SSHLocation:
+    Description: The IP address range that can be used to SSH to the EC2 instances
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+Resources:
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT7M
+        Count: '1'
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          full_install:
+          - install_and_enable_cfn_hup
+        install_and_enable_cfn_hup:
+          files:
+            "/etc/cfn/cfn-hup.conf":
+              content:
+                Fn::Join:
+                - ''
+                - - "[main]\n"
+                  - stack=
+                  - Ref: AWS::StackId
+                  - "\n"
+                  - region=
+                  - Ref: AWS::Region
+                  - "\n"
+              mode: '000400'
+              owner: root
+              group: root
+            "/etc/cfn/hooks.d/cfn-auto-reloader.conf":
+              content:
+                Fn::Join:
+                - ''
+                - - "[cfn-auto-reloader-hook]\n"
+                  - "triggers=post.update\n"
+                  - "path=Resources.EC2Instance.Metadata.AWS::CloudFormation::Init\n"
+                  - "action=/opt/aws/bin/cfn-init -v"
+                  - "--stack "
+                  - Ref: AWS::StackName
+                  - " --resource EC2Instance"
+                  - " --configsets full_install"
+                  - " --region "
+                  - Ref: AWS::Region
+                  - "\n"
+                  - "runas=root"
+            "/lib/systemd/system/cfn-hup.service":
+              content:
+                Fn::Join:
+                  - ''
+                  - - "[Unit]\n"
+                    - "Description=cfn-hup daemon\n\n"
+                    - "[Service]\n"
+                    - "Type=simple\n"
+                    - "ExecStart=/opt/aws/bin/cfn-hup\n"
+                    - "Restart=always\n\n"
+                    - "[Install]\n"
+                    - "WantedBy=multi-user.target"
+          commands:
+            01enable_cfn_hup:
+              command: systemctl enable cfn-hup.service
+            02start_cfn_hup:
+              command: systemctl start cfn-hup.service
+    Properties:
+      InstanceType:
+        Ref: InstanceType
+      SecurityGroups:
+        - Ref: SecurityGroup
+      KeyName:
+        Ref: KeyName
+      ImageId:
+        Ref: EC2AMI
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          exec > /tmp/userdata.log 2>&1
+          # Actualizar todas las apps
+          apt update -y
+          # Instalar AWS helper scripts de CloudFormation
+          mkdir -p /opt/aws/bin
+          wget https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
+          python3 -m easy_install --script-dir /opt/aws/bin aws-cfn-bootstrap-py3-latest.tar.gz
+          ln -s /root/aws-cfn-bootstrap-latest/init/ubuntu/cfn-hup /etc/init.d/cfn-hup
+          /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2Instance --configsets full_install --region ${AWS::Region}
+          # Instalar MVN
+          cat > /tmp/install_script.sh << EOF
+            # Start Install
+            echo "Instalando dependencias Node.JS"
+            wget -qO- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash
+            . ~/.nvm/nvm.sh
+            . ~/bashrc
+
+            #Instalamos node y npm
+            nvm install --lts
+
+            #Clonamos app
+            curl -sL https://github.com/Julianmenav/aws-cloudformation/archive/main.zip --output main.zip
+            sudo apt install unzip
+            unzip main.zip
+            mv ./aws-cloudformation-main ./app
+            rm -rf main.zip
+            mkdir logs
+            #Instalamos dependencias
+            cd app
+            npm i
+            npm start
+          EOF
+          chown ubuntu:ubuntu /tmp/install_script.sh && chmod a+x /tmp/install_script.sh
+          sleep 1; su - ubuntu -c "/tmp/install_script.sh"
+          # Esta tiene que serla ultima instrucción
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource EC2Instance --region ${AWS::Region}
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Acesso SSH y web en 8080
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp:
+          Ref: SSHLocation
+      - IpProtocol: tcp
+        FromPort: '8080'
+        ToPort: '8080'
+        CidrIp:
+          Ref: SSHLocation
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+
+Outputs:
+  InstanceId:
+    Description: 'InstanceId of the newly created EC2 instance'
+    Value: !Sub "http://${EC2Instance.PublicDnsName}:8080"
+    Export:
+      Name: "InstanceId"
