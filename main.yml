@@ -32,7 +32,7 @@ Resources:
     Type: AWS::EC2::Instance
     CreationPolicy:
       ResourceSignal:
-        Timeout: PT7M
+        Timeout: PT4M
         Count: '1'
     Metadata:
       AWS::CloudFormation::Init:
@@ -93,6 +93,8 @@ Resources:
         Ref: InstanceType
       SecurityGroups:
         - Ref: SecurityGroup
+      IamInstanceProfile:
+        "LabInstanceProfile"
       KeyName:
         Ref: KeyName
       ImageId:
@@ -103,37 +105,24 @@ Resources:
           exec > /tmp/userdata.log 2>&1
           # Actualizar todas las apps
           apt update -y
+
+          # Instalamos daemon de codedeploy
+          apt install unzip
+          apt install ruby-full -y
+          apt install wget -y
+          cd /home/ubuntu
+          wget https://aws-codedeploy-${AWS::Region}.s3.${AWS::Region}.amazonaws.com/latest/install
+          chmod +x ./install
+          ./install auto > /tmp/logfile
+          service codedeploy-agent start
+
           # Instalar AWS helper scripts de CloudFormation
           mkdir -p /opt/aws/bin
           wget https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
           python3 -m easy_install --script-dir /opt/aws/bin aws-cfn-bootstrap-py3-latest.tar.gz
           ln -s /root/aws-cfn-bootstrap-latest/init/ubuntu/cfn-hup /etc/init.d/cfn-hup
           /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2Instance --configsets full_install --region ${AWS::Region}
-          # Instalar MVN
-          cat > /tmp/install_script.sh << EOF
-            # Start Install
-            echo "Instalando dependencias Node.JS"
-            wget -qO- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash
-            . ~/.nvm/nvm.sh
-            . ~/bashrc
 
-            #Instalamos node y npm
-            nvm install --lts
-
-            #Clonamos app
-            curl -sL https://github.com/Julianmenav/aws-cloudformation/archive/main.zip --output main.zip
-            sudo apt install unzip
-            unzip main.zip
-            mv ./aws-cloudformation-main ./app
-            rm -rf main.zip
-            mkdir logs
-            #Instalamos dependencias
-            cd app
-            npm i
-            npm start
-          EOF
-          chown ubuntu:ubuntu /tmp/install_script.sh && chmod a+x /tmp/install_script.sh
-          sleep 1; su - ubuntu -c "/tmp/install_script.sh"
           # Esta tiene que serla ultima instrucción
           /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource EC2Instance --region ${AWS::Region}
       Tags:
@@ -157,7 +146,6 @@ Resources:
       Tags:
         - Key: Name
           Value: !Ref AWS::StackName
-
 Outputs:
   InstanceId:
     Description: 'InstanceId of the newly created EC2 instance'
