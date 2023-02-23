@@ -146,6 +146,25 @@ Resources:
       Tags:
         - Key: Name
           Value: !Ref AWS::StackName
+  Application:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: "application_node"
+      ComputePlatform: Server
+  DeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    DependsOn: EC2Instance
+    Properties:
+      ApplicationName: !Ref Application
+      DeploymentGroupName: "deployment-group"
+      DeploymentStyle:
+        DeploymentType: IN_PLACE
+        DeploymentOption: WITHOUT_TRAFFIC_CONTROL
+      Ec2TagFilters:
+        - Key: "aws:cloudformation:stack-name"
+          Value: !Ref "AWS::StackName"
+          Type: "KEY_AND_VALUE"
+      ServiceRoleArn: "arn:aws:iam::943875773936:role/LabRole"
 Outputs:
   InstanceId:
     Description: 'InstanceId of the newly created EC2 instance'
